@@ -69,7 +69,183 @@ def generate_quick_replies() -> List[str]:
 def generate_images() -> List[str]:
     if random.random() < 0.4:  # 40% chance
         count = random.randint(1, 2)
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+from typing import Optional, List, Dict
+import uuid
+import time
+import random
+
+app = FastAPI(title="Dummy Messages API", version="1.0.0")
+
+# Enable CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# In-memory conversation storage
+conversation_memory: Dict[str, List[Dict]] = {}
+
+# Request Models
+class Context(BaseModel):
+    user_id: str
+    sys_prompt: Optional[str] = None
+    historical_messages: Optional[List[str]] = []
+
+class MessageRequest(BaseModel):
+    conversation_id: Optional[str] = None
+    message: str
+    channel: str
+    attachment_1: Optional[str] = None
+    attachment_2: Optional[str] = None
+    context: Optional[Context] = None
+
+# Response Model
+class MessageResponse(BaseModel):
+    message_id: str
+    response: str
+    conversation_id: str
+    page_id: str
+    timestamp: int
+    handoff_reason: Optional[str] = None
+    quick_reply_pills: List[str]
+    images: List[str]
+    admin_text: str
+
+# Mock data generators
+def generate_response(message: str, channel: str, conversation_history: List[Dict] = None) -> str:
+    if conversation_history and len(conversation_history) > 0:
+        templates = [
+            f"Thank you for your follow-up message: '{message}'. Based on our previous conversation, I can help you further.",
+            f"I see you mentioned '{message}'. Continuing from our earlier discussion...",
+            f"Great to hear from you again! Regarding '{message}', here's what I found.",
+            f"Following up on our conversation, about '{message}': Let me provide more details.",
+        ]
+    else:
+        templates = [
+            f"Thank you for your message: '{message}'. How can I assist you further?",
+            f"I received your inquiry via {channel}. Let me help you with that.",
+            f"Based on your message, here's what I found...",
+            f"Great question! Regarding '{message}', I can provide the following information.",
+            f"I understand you're asking about this via {channel}. Here's my response."
+        ]
+    return random.choice(templates)
+
+def generate_handoff_reason() -> Optional[str]:
+    if random.random() < 0.3:
+        reasons = ["complex_inquiry", "escalation_requested", "technical_support_needed", "billing_issue"]
+        return random.choice(reasons)
+    return None
+
+def generate_quick_replies() -> List[str]:
+    all_replies = ["Yes, please", "No, thanks", "Tell me more", "Contact support", 
+                   "Check status", "View details", "Get help", "Learn more"]
+    count = random.randint(2, 4)
+    return random.sample(all_replies, count)
+
+def generate_images() -> List[str]:
+    if random.random() < 0.4:
+        count = random.randint(1, 2)
         return [f"https://picsum.photos/400/300?random={random.randint(1, 1000)}" for _ in range(count)]
+    return []
+
+def generate_admin_text(user_id: Optional[str], channel: str, conversation_id: str, is_new: bool) -> str:
+    if is_new:
+        templates = [
+            f"New conversation {conversation_id} started on {channel}",
+            f"First message in conversation {conversation_id}",
+            f"New inquiry via {channel} - conversation initiated"
+        ]
+    else:
+        templates = [
+            f"Conversation {conversation_id} continued",
+            f"Follow-up message in conversation {conversation_id}",
+            f"Ongoing conversation {conversation_id} updated"
+        ]
+    
+    if user_id:
+        templates = [t + f" (user: {user_id})" for t in templates]
+    
+    return random.choice(templates)
+
+@app.get("/")
+def read_root():
+    return {
+        "message": "Dummy Messages API",
+        "version": "1.0.0",
+        "endpoints": {
+            "POST /{page_id}/messages": "Send a message and receive a response"
+        }
+    }
+
+@app.post("/{page_id}/messages", response_model=MessageResponse)
+def create_message(page_id: str, request: MessageRequest):
+    conversation_id = request.conversation_id or str(uuid.uuid4())
+    is_new_conversation = conversation_id not in conversation_memory
+    conversation_history = conversation_memory.get(conversation_id, [])
+    message_id = str(uuid.uuid4())
+    timestamp = int(time.time())
+    response_text = generate_response(request.message, request.channel, conversation_history)
+    handoff_reason = generate_handoff_reason()
+    quick_reply_pills = generate_quick_replies()
+    images = generate_images()
+    user_id = request.context.user_id if request.context else None
+    admin_text = generate_admin_text(user_id, request.channel, conversation_id, is_new_conversation)
+    
+    message_record = {
+        "message_id": message_id,
+        "timestamp": timestamp,
+        "user_message": request.message,
+        "bot_response": response_text,
+        "channel": request.channel,
+        "user_id": user_id,
+        "attachments": [request.attachment_1, request.attachment_2] if request.attachment_1 or request.attachment_2 else []
+    }
+    
+    if conversation_id not in conversation_memory:
+        conversation_memory[conversation_id] = []
+    
+    conversation_memory[conversation_id].append(message_record)
+    
+    return MessageResponse(
+        message_id=message_id,
+        response=response_text,
+        conversation_id=conversation_id,
+        page_id=page_id,
+        timestamp=timestamp,
+        handoff_reason=handoff_reason,
+        quick_reply_pills=quick_reply_pills,
+        images=images,
+        admin_text=admin_text
+    )
+
+@app.get("/conversations/{conversation_id}")
+def get_conversation(conversation_id: str):
+    if conversation_id not in conversation_memory:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    
+    return {
+        "conversation_id": conversation_id,
+        "message_count": len(conversation_memory[conversation_id]),
+        "messages": conversation_memory[conversation_id]
+    }
+
+@app.get("/health")
+def health_check():
+    return {
+        "status": "healthy",
+        "timestamp": int(time.time()),
+        "active_conversations": len(conversation_memory)
+    }
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)        return [f"https://picsum.photos/400/300?random={random.randint(1, 1000)}" for _ in range(count)]
     return []
 
 def generate_admin_text(user_id: str, channel: str, conversation_id: str) -> str:
